@@ -1,0 +1,158 @@
+Metadata:
+  License: Apache-2.0
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'This AWS CloudFormation Template will launch an Amazon EC2 instance of type t2.micro with latest Amazon Linux 2 OS, bootstrap Apache/PHP, and
+install a simple address book web application. The template will also create an Amazon RDS MySQL database instance in free tier, i.e. of type db.t2.micro and with no Multi-AZ setup or
+read replicas. The WebTier Security Group will allow only SSH and HTTP connections to this web server EC2 instance, and the DBTier Security Group will
+only allow the WebTier Security Group to initiate database connections to the RDS DB instance over TCP port 3306. It is recommended that you deploy in Default VPC.'
+
+Parameters:
+  KeyName:
+    Description: Name of an existing EC2 KeyPair to enable SSH access
+    Type: AWS::EC2::KeyPair::KeyName
+    ConstraintDescription: Must be the name of an existing EC2 KeyPair.
+  VPC:
+    Description: Choose VPC
+    Type: AWS::EC2::VPC::Id
+  SubnetID:
+    Description: Choose Subnet
+    Type: AWS::EC2::Subnet::Id
+  LatestAmiId:
+    Type : AWS::SSM::Parameter::Value<String>
+    Default: /aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-ebs
+  DBInstanceID:
+    Default: rdsdb
+    Description: RDS DB instance
+    Type: String
+    MinLength: '1'
+    MaxLength: '63'
+    AllowedPattern: '[a-zA-Z][a-zA-Z0-9]*'
+    ConstraintDescription: >-
+      Must begin with a letter and must not end with a hyphen or contain two
+      consecutive hyphens.
+  DatabaseName:
+    Default: mydb
+    Description: Database name
+    Type: String
+    MinLength: '1'
+    MaxLength: '64'
+    AllowedPattern: '[a-zA-Z][a-zA-Z0-9]*'
+    ConstraintDescription: Must begin with a letter and contain only alphanumeric characters.
+  MasterUsername:
+    NoEcho: 'true'
+    Description: Username for MySQL database access
+    Type: String
+    MinLength: '1'
+    MaxLength: '16'
+    AllowedPattern: '[a-zA-Z][a-zA-Z0-9]*'
+    ConstraintDescription: Must begin with a letter and contain only alphanumeric characters.
+  MasterPassword:
+    NoEcho: 'true'
+    Description: Password for MySQL database access
+    Type: String
+    MinLength: '8'
+    MaxLength: '41'
+    AllowedPattern: '[a-zA-Z0-9]*'
+    ConstraintDescription: Must contain only alphanumeric characters.
+
+Resources:
+  EC2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t2.micro
+      KeyName: !Ref KeyName
+      ImageId: !Ref LatestAmiId
+      Tags:
+        - Key: Name
+          Value: "Webserver"
+      SecurityGroups:
+        - !Ref WebSecurityGroup
+      UserData:
+        Fn::Base64: |
+           #!/bin/bash
+           yum -y install httpd php mysql php-mysql
+
+           case $(ps -p 1 -o comm | tail -1) in
+           systemd) systemctl enable --now httpd ;;
+           init) chkconfig httpd on; service httpd start ;;
+           *) echo "Error starting httpd (OS not using init or systemd)." 2>&1
+           esac
+
+           if [ ! -f /var/www/html/bootcamp-app.tar.gz ]; then
+           cd /var/www/html
+           wget https://s3.amazonaws.com/immersionday-labs/bootcamp-app.tar
+           tar xvf bootcamp-app.tar
+           chown apache:root /var/www/html/rds.conf.php
+           fi
+           yum -y update
+
+  IPAddress:
+    Type: AWS::EC2::EIP
+  IPAssoc:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      InstanceId: !Ref EC2Instance
+      EIP: !Ref IPAddress
+  WebSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: Allow SSH and HTTP connections to EC2 instance
+      Tags:
+        - Key: Name
+          Value: "WebTier-sg"
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+
+  DBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow connections only from Webserver
+      Tags:
+        - Key: Name
+          Value: "DBTier-sg"
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 3306
+        ToPort: 3306
+        SourceSecurityGroupId: !GetAtt WebSecurityGroup.GroupId
+
+  MyDB:
+    Type: 'AWS::RDS::DBInstance'
+    Properties:
+      DBInstanceIdentifier: !Ref DBInstanceID
+      DBName: !Ref DatabaseName
+      DBInstanceClass: db.t2.micro
+      AllocatedStorage: 20
+      Engine: MySQL
+      EngineVersion: 5.7.28
+      MasterUsername: !Ref MasterUsername
+      MasterUserPassword: !Ref MasterPassword
+      DBParameterGroupName: !Ref RDSParameterGroup
+      VPCSecurityGroups:
+        - Fn::GetAtt: [ DBSecurityGroup, GroupId ]
+
+  RDSParameterGroup:
+    Properties:
+      Description: "custom parameter group"
+      Family: mysql5.7
+      Parameters:
+        character_set_database: utf32
+      Tags:
+        - Key: Name
+          Value: "tut"
+    Type: "AWS::RDS::DBParameterGroup"
+
+Outputs:
+  WebsiteURL:
+    Value: !Sub 'http://${EC2Instance.PublicDnsName}/'
+    Description: Webserver URL
+  RDSEndpoint:
+    Value: !GetAtt MyDB.Endpoint.Address
+    Description: RDS DB instance endpoint
