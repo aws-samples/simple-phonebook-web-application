@@ -131,7 +131,7 @@ Resources:
       DBInstanceClass: db.t2.micro
       AllocatedStorage: 20
       Engine: MySQL
-      EngineVersion: 5.7.28
+      EngineVersion: 5.7.37
       MasterUsername: !Ref MasterUsername
       MasterUserPassword: !Ref MasterPassword
       DBParameterGroupName: !Ref RDSParameterGroup
